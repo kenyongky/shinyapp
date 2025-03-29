@@ -23,7 +23,14 @@ weather_df <- read_csv("weather_data_cleaned.csv") %>%
 
 # UI
 ui <- fluidPage(
-  titlePanel("Mean Temperature Trend (2020–2024)"),
+  titlePanel("Mean Temperature Trend"),
+  
+  # Button to link to another app
+  tags$a(href = "https://your-other-app.shinyapps.io", 
+         target = "_blank", 
+         class = "btn btn-success", 
+         style = "margin-bottom: 10px;",
+         "🔗 Go to Climate Summary Dashboard"),
   
   sidebarLayout(
     sidebarPanel(

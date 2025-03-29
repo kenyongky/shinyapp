@@ -1,0 +1,12 @@
+name: geofacet
+title: geofacet
+username: kenyong
+account: kenyong
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 14374413
+bundleId: 10024345
+url: https://kenyong.shinyapps.io/geofacet/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
