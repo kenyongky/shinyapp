@@ -7,45 +7,90 @@
 #    https://shiny.posit.co/
 #
 
+# app.R
+
+# app.R
+# app.R
+
 library(shiny)
+library(tidyverse)
+library(lubridate)
+library(plotly)
 
-# Define UI for application that draws a histogram
+# Load the cleaned weather dataset
+weather_df <- read_csv("weather_data_cleaned.csv") %>%
+  mutate(Date = as.Date(Date))
+
+# UI
 ui <- fluidPage(
-
-    # Application title
-    titlePanel("Old Faithful Geyser Data"),
-
-    # Sidebar with a slider input for number of bins 
-    sidebarLayout(
-        sidebarPanel(
-            sliderInput("bins",
-                        "Number of bins:",
-                        min = 1,
-                        max = 50,
-                        value = 30)
-        ),
-
-        # Show a plot of the generated distribution
-        mainPanel(
-           plotOutput("distPlot")
-        )
+  titlePanel("Mean Temperature Trend (2020–2024)"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("region", "Select Region:",
+                  choices = unique(weather_df$Region),
+                  selected = unique(weather_df$Region)[1],
+                  multiple = FALSE),
+      uiOutput("station_ui"),
+      dateRangeInput("date_range", "Select Date Range:",
+                     start = min(weather_df$Date),
+                     end = max(weather_df$Date),
+                     min = min(weather_df$Date),
+                     max = max(weather_df$Date),
+                     format = "yyyy-mm-dd")
+    ),
+    
+    mainPanel(
+      plotlyOutput("tempTrendPlot")
     )
+  )
 )
 
-# Define server logic required to draw a histogram
-server <- function(input, output) {
-
-    output$distPlot <- renderPlot({
-        # generate bins based on input$bins from ui.R
-        x    <- faithful[, 2]
-        bins <- seq(min(x), max(x), length.out = input$bins + 1)
-
-        # draw the histogram with the specified number of bins
-        hist(x, breaks = bins, col = 'darkgray', border = 'white',
-             xlab = 'Waiting time to next eruption (in mins)',
-             main = 'Histogram of waiting times')
-    })
+# Server
+server <- function(input, output, session) {
+  
+  # Dynamic station choices based on selected region
+  output$station_ui <- renderUI({
+    stations <- weather_df %>%
+      filter(Region == input$region) %>%
+      pull(Station) %>%
+      unique()
+    
+    selectInput("station", "Select Station:",
+                choices = stations,
+                selected = stations[1])
+  })
+  
+  # Plot
+  output$tempTrendPlot <- renderPlotly({
+    filtered_data <- weather_df %>%
+      filter(
+        Region == input$region,
+        Station == input$station,
+        Date >= input$date_range[1],
+        Date <= input$date_range[2]
+      ) %>%
+      group_by(YearMonth = floor_date(Date, "month")) %>%
+      summarise(MeanTemp = mean(`Mean Temperature (°C)`, na.rm = TRUE), .groups = "drop")
+    
+    p <- ggplot(filtered_data, aes(x = YearMonth, y = MeanTemp)) +
+      geom_line(color = "steelblue", size = 1) +
+      geom_point(aes(text = paste("Month:", YearMonth,
+                                  "<br>Mean Temp:", round(MeanTemp, 2), "°C")),
+                 color = "darkblue") +
+      labs(
+        title = "Mean Temperature Trend",
+        x = "Month",
+        y = "Mean Temperature (°C)"
+      ) +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = "text")
+  })
 }
 
-# Run the application 
+# Run the app
 shinyApp(ui = ui, server = server)
+
+
+
