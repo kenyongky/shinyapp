@@ -5,7 +5,7 @@ account: kenyong
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 14376486
-bundleId: 10026423
+bundleId: 10026653
 url: https://kenyong.shinyapps.io/interpolation/
 version: 1
 asMultiple: FALSE

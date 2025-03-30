@@ -49,7 +49,7 @@ ui <- fluidPage(
       conditionalPanel(
         condition = "input.method == 'idw'",
         sliderTextInput("nmax", "Number of Nearest Stations (nmax):",
-                        choices = as.character(1:15),
+                        choices = as.character(1:20),
                         selected = "5",
                         grid = TRUE)
       ),
@@ -84,67 +84,84 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   
   interpolation_result <- eventReactive(input$generate, {
-    
-    start_date <- input$date_range[1]
-    end_date <- input$date_range[2]
-    
-    filtered_data <- weather_data %>%
-      filter(Date >= start_date & Date <= end_date)
-    
-    monthly_summary <- filtered_data %>%
-      group_by(Station) %>%
-      summarise(MONTHVAL = if (input$variable == "Daily Rainfall Total (mm)") {
-        sum(.data[[input$variable]], na.rm = TRUE)
-      } else {
-        mean(.data[[input$variable]], na.rm = TRUE)
-      }, .groups = "drop")
-    
-    rfdata <- left_join(monthly_summary, station_coords, by = "Station")
-    
-    rfdata_sf <- st_as_sf(rfdata, coords = c("Longitude", "Latitude"), crs = 4326) %>%
-      st_transform(crs = 3414)
-    
-    grid <- terra::rast(mpsz2019, nrows = 690, ncols = 1075)
-    xy <- terra::xyFromCell(grid, 1:ncell(grid))
-    coop <- st_as_sf(as.data.frame(xy), coords = c("x", "y"), crs = 3414)
-    coop <- st_filter(coop, mpsz2019)
-    
-    if (input$method == "idw") {
-      interp_model <- gstat(formula = MONTHVAL ~ 1,
-                            locations = rfdata_sf,
-                            nmax = as.numeric(input$nmax),
-                            set = list(idp = 2))
+    withProgress(message = "Generating map...", value = 0.1, {
       
-    } else {
-      vgm_model <- variogram(MONTHVAL ~ 1, rfdata_sf)
+      start_date <- input$date_range[1]
+      end_date <- input$date_range[2]
       
-      if (input$advanced) {
-        model <- vgm(psill = input$psill,
-                     model = input$kriging_model,
-                     range = input$range,
-                     nugget = input$nugget)
+      filtered_data <- weather_data %>%
+        filter(Date >= start_date & Date <= end_date)
+      
+      monthly_summary <- filtered_data %>%
+        group_by(Station) %>%
+        summarise(MONTHVAL = if (input$variable == "Daily Rainfall Total (mm)") {
+          sum(.data[[input$variable]], na.rm = TRUE)
+        } else {
+          mean(.data[[input$variable]], na.rm = TRUE)
+        }, .groups = "drop")
+      
+      rfdata <- left_join(monthly_summary, station_coords, by = "Station")
+      
+      rfdata_sf <- st_as_sf(rfdata, coords = c("Longitude", "Latitude"), crs = 4326) %>%
+        st_transform(crs = 3414)
+      
+      grid <- terra::rast(mpsz2019, nrows = 300, ncols = 500)
+      xy <- terra::xyFromCell(grid, 1:ncell(grid))
+      coop <- st_as_sf(as.data.frame(xy), coords = c("x", "y"), crs = 3414)
+      coop <- st_filter(coop, mpsz2019)
+      
+      if (input$method == "idw") {
+        interp_model <- gstat(formula = MONTHVAL ~ 1,
+                              locations = rfdata_sf,
+                              nmax = as.numeric(input$nmax),
+                              set = list(idp = 2))
       } else {
-        model <- vgm(model = input$kriging_model)
+        vgm_model <- variogram(MONTHVAL ~ 1, rfdata_sf)
+        
+        model <- if (input$advanced) {
+          vgm(psill = input$psill,
+              model = input$kriging_model,
+              range = input$range,
+              nugget = input$nugget)
+        } else {
+          vgm(model = input$kriging_model)
+        }
+        
+        fit <- tryCatch({
+          fit.variogram(vgm_model, model = model)
+        }, error = function(e) {
+          showNotification(paste("❌ Variogram fitting failed:", e$message), type = "error")
+          return(NULL)
+        })
+        
+        if (is.null(fit)) return(NULL)
+        
+        interp_model <- gstat(formula = MONTHVAL ~ 1,
+                              locations = rfdata_sf,
+                              model = fit)
       }
       
-      fit <- fit.variogram(vgm_model, model = model)
-      interp_model <- gstat(formula = MONTHVAL ~ 1,
-                            locations = rfdata_sf,
-                            model = fit)
-    }
-    
-    interp_result <- predict(interp_model, coop)
-    interp_result$x <- st_coordinates(interp_result)[, 1]
-    interp_result$y <- st_coordinates(interp_result)[, 2]
-    interp_result$pred <- interp_result$var1.pred
-    
-    raster <- terra::rasterize(interp_result, grid, field = "pred", fun = "mean")
-    names(raster) <- "pred"
-    
-    range_title <- paste(format(start_date, "%d %b %Y"), "to", format(end_date, "%d %b %Y"))
-    
-    list(raster = raster,
-         title = paste(toupper(input$method), "Interpolation of", range_title))
+      interp_result <- tryCatch({
+        predict(interp_model, coop)
+      }, error = function(e) {
+        showNotification(paste("❌ Interpolation failed:", e$message), type = "error")
+        return(NULL)
+      })
+      
+      if (is.null(interp_result)) return(NULL)
+      
+      interp_result$x <- st_coordinates(interp_result)[, 1]
+      interp_result$y <- st_coordinates(interp_result)[, 2]
+      interp_result$pred <- interp_result$var1.pred
+      
+      raster <- terra::rasterize(interp_result, grid, field = "pred", fun = "mean")
+      names(raster) <- "pred"
+      
+      range_title <- paste(format(start_date, "%d %b %Y"), "to", format(end_date, "%d %b %Y"))
+      
+      list(raster = raster,
+           title = paste(toupper(input$method), "Interpolation of", range_title))
+    })
   })
   
   output$interpolationMap <- renderTmap({
@@ -152,7 +169,7 @@ server <- function(input, output, session) {
     
     raster <- interpolation_result()$raster
     title <- interpolation_result()$title
-    palette <- if (input$variable == "Daily Rainfall Total (mm)") "Blues" else "Oranges"
+    palette <- if (input$variable == "Daily Rainfall Total (mm)") "brewer.blues" else "brewer.oranges"
     
     tmap_mode("plot")
     tm_shape(raster) +
