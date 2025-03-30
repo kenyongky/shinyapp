@@ -37,28 +37,60 @@ custom_grid <- data.frame(
 # UI
 ui <- fluidPage(
   titlePanel("Singapore Weather GeoFacet Visualisation"),
-  sidebarLayout(
-    sidebarPanel( width = 2,
-      selectInput("variable", "Select Variable:",
-                  choices = c("Total Rainfall (mm)" = "Daily Rainfall Total (mm)",
-                              "Mean Temperature (°C)" = "Mean Temperature (°C)",
-                              "Maximum Temperature (°C)" = "Maximum Temperature (°C)",
-                              "Minimum Temperature (°C)" = "Minimum Temperature (°C)")),
-      selectInput("resolution", "Select Time Resolution:",
-                  choices = c("Monthly", "Yearly")),
-      conditionalPanel(
-        condition = "input.resolution == 'Monthly'",
-        selectInput("start_month", "Start Month:", choices = month_choices, selected = "2024-01"),
-        selectInput("end_month", "End Month:", choices = month_choices, selected = "2024-12")
-      ),
-      conditionalPanel(
-        condition = "input.resolution == 'Yearly'",
-        sliderInput("year_range", "Select Year Range:",
-                    min = 2020, max = 2024, value = c(2022, 2024), step = 1, sep = "")
-      )
+  tabsetPanel(
+    tabPanel("Main",
+             sidebarLayout(
+               sidebarPanel(width = 3,
+                            selectInput("variable", "Select Variable:",
+                                        choices = c("Total Rainfall (mm)" = "Daily Rainfall Total (mm)",
+                                                    "Mean Temperature (°C)" = "Mean Temperature (°C)",
+                                                    "Maximum Temperature (°C)" = "Maximum Temperature (°C)",
+                                                    "Minimum Temperature (°C)" = "Minimum Temperature (°C)")),
+                            selectInput("resolution", "Select Time Resolution:",
+                                        choices = c("Monthly", "Yearly")),
+                            conditionalPanel(
+                              condition = "input.resolution == 'Monthly'",
+                              selectInput("start_month", "Start Month:", choices = month_choices, selected = "2024-01"),
+                              selectInput("end_month", "End Month:", choices = month_choices, selected = "2024-12")
+                            ),
+                            conditionalPanel(
+                              condition = "input.resolution == 'Yearly'",
+                              sliderInput("year_range", "Select Year Range:",
+                                          min = 2020, max = 2024, value = c(2022, 2024), step = 1, sep = "")
+                            )
+               ),
+               mainPanel(
+                 plotlyOutput("geofacetPlot", height = "800px")
+               )
+             )
     ),
-    mainPanel(
-      plotlyOutput("geofacetPlot", height = "800px")
+    tabPanel("Extreme Weather",
+             sidebarLayout(
+               sidebarPanel(width = 3,
+                            selectInput("extreme_var", "Select Variable:",
+                                        choices = c("Total Rainfall (mm)" = "Daily Rainfall Total (mm)",
+                                                    "Maximum Temperature (°C)" = "Maximum Temperature (°C)",
+                                                    "Minimum Temperature (°C)" = "Minimum Temperature (°C)")),
+                            numericInput("threshold", "Threshold:", value = 30, step = 0.1),
+                            radioButtons("direction", "Threshold Comparison:",
+                                         choices = c("≥" = "greater", "≤" = "less"),
+                                         selected = "greater"),
+                            selectInput("extreme_res", "Time Resolution:", choices = c("Monthly", "Yearly")),
+                            conditionalPanel(
+                              condition = "input.extreme_res == 'Monthly'",
+                              selectInput("ext_start", "Start Month:", choices = month_choices, selected = "2024-01"),
+                              selectInput("ext_end", "End Month:", choices = month_choices, selected = "2024-12")
+                            ),
+                            conditionalPanel(
+                              condition = "input.extreme_res == 'Yearly'",
+                              sliderInput("ext_years", "Select Year Range:",
+                                          min = 2020, max = 2024, value = c(2022, 2024), step = 1, sep = "")
+                            )
+               ),
+               mainPanel(
+                 plotlyOutput("extremePlot", height = "800px")
+               )
+             )
     )
   )
 )
@@ -66,8 +98,8 @@ ui <- fluidPage(
 # Server
 server <- function(input, output, session) {
   
+  # --- MAIN GEOFACET PLOT ---
   output$geofacetPlot <- renderPlotly({
-    
     df <- weather_data %>%
       mutate(
         Year = year(Date),
@@ -78,7 +110,6 @@ server <- function(input, output, session) {
                                     "Mean Temperature (°C)",
                                     "Maximum Temperature (°C)",
                                     "Minimum Temperature (°C)") == input$variable))
-    
     is_rainfall <- input$variable == "Daily Rainfall Total (mm)"
     
     if (input$resolution == "Yearly") {
@@ -106,7 +137,6 @@ server <- function(input, output, session) {
               axis.text.x = element_text(angle = 45, hjust = 1))
       
     } else {
-      # Monthly
       start_date <- as.Date(paste0(input$start_month, "-01"))
       end_date <- ceiling_date(as.Date(paste0(input$end_month, "-01")), "month") - 1
       
@@ -137,7 +167,6 @@ server <- function(input, output, session) {
                x = "Month", y = variable_label) +
           theme(strip.text = element_text(size = 9, face = "bold"),
                 axis.text.x = element_text(angle = 90, vjust = 0.5))
-        
       } else {
         plt <- ggplot(agg_df, aes(x = YearMonth, y = Value, color = Region, group = Station,
                                   text = paste0("Station: ", Station,
@@ -160,6 +189,72 @@ server <- function(input, output, session) {
     
     ggplotly(plt, tooltip = "text") %>%
       layout(hoverlabel = list(bgcolor = "white"))
+  })
+  
+  # --- EXTREME WEATHER PLOT ---
+  output$extremePlot <- renderPlotly({
+    df <- weather_data %>%
+      mutate(
+        Year = year(Date),
+        Month = floor_date(Date, "month"),
+        YearMonth = format(Month, "%b %Y")
+      )
+    
+    var <- input$extreme_var
+    threshold <- input$threshold
+    direction <- input$direction  # "greater" or "less"
+    label <- names(which(c("Daily Rainfall Total (mm)",
+                           "Maximum Temperature (°C)",
+                           "Minimum Temperature (°C)") == var))
+    
+    comparison <- if (direction == "greater") {
+      function(x) x >= threshold
+    } else {
+      function(x) x <= threshold
+    }
+    
+    if (input$extreme_res == "Yearly") {
+      yrange <- input$ext_years
+      filtered <- df %>% filter(Year >= yrange[1], Year <= yrange[2])
+      
+      extreme_df <- filtered %>%
+        filter(comparison(.data[[var]])) %>%
+        group_by(Station, Region, Year) %>%
+        summarise(Days = n(), .groups = "drop")
+      
+      plt <- ggplot(extreme_df, aes(x = Year, y = Days, fill = Region)) +
+        geom_col() +
+        facet_geo(~ Station, grid = custom_grid) +
+        theme_minimal() +
+        labs(title = paste("Extreme Days per Year (", label, ifelse(direction == "greater", " ≥ ", " ≤ "), threshold, ")", sep = ""),
+             x = "Year", y = "Number of Extreme Days") +
+        theme(strip.text = element_text(size = 9, face = "bold"))
+      
+    } else {
+      start_date <- as.Date(paste0(input$ext_start, "-01"))
+      end_date <- ceiling_date(as.Date(paste0(input$ext_end, "-01")), "month") - 1
+      
+      filtered <- df %>%
+        filter(Date >= start_date & Date <= end_date)
+      
+      extreme_df <- filtered %>%
+        filter(comparison(.data[[var]])) %>%
+        mutate(MonthLabel = factor(format(Month, "%b %Y"),
+                                   levels = format(seq(start_date, end_date, by = "month"), "%b %Y"))) %>%
+        group_by(Station, Region, MonthLabel) %>%
+        summarise(Days = n(), .groups = "drop")
+      
+      plt <- ggplot(extreme_df, aes(x = MonthLabel, y = Days, fill = Region)) +
+        geom_col() +
+        facet_geo(~ Station, grid = custom_grid) +
+        theme_minimal() +
+        labs(title = paste("Extreme Days per Month (", label, ifelse(direction == "greater", " ≥ ", " ≤ "), threshold, ")", sep = ""),
+             x = "Month", y = "Number of Extreme Days") +
+        theme(strip.text = element_text(size = 9, face = "bold"),
+              axis.text.x = element_text(angle = 90, vjust = 0.5))
+    }
+    
+    ggplotly(plt)
   })
 }
 
