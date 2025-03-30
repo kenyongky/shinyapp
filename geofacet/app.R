@@ -2,17 +2,22 @@ library(shiny)
 library(ggplot2)
 library(dplyr)
 library(lubridate)
-library(geofacet)
 library(readr)
-library(tidyr)
+library(geofacet)
+library(plotly)
 
-# Set locale to ensure month abbreviations match month.abb
 Sys.setlocale("LC_TIME", "C")
 
-# Load dataset
-weather_data <- read_csv("weather_data_cleaned.csv")
+# Load the data
+weather_data <- read_csv("data/weather_data_cleaned.csv")
+weather_data$Date <- as.Date(weather_data$Date)
 
-# Custom geofacet grid
+# Generate year-month dropdowns (Jan 2020 to Dec 2024)
+month_seq <- seq.Date(from = as.Date("2020-01-01"), to = as.Date("2024-12-01"), by = "month")
+month_choices <- format(month_seq, "%Y-%m")
+names(month_choices) <- format(month_seq, "%b %Y")
+
+# Custom facet grid
 custom_grid <- data.frame(
   name = c("Admiralty", "Sembawang", "Seletar", "Pulau Ubin",
            "Ang Mo Kio", "Newton", "Tai Seng", "Paya Lebar",
@@ -31,22 +36,29 @@ custom_grid <- data.frame(
 
 # UI
 ui <- fluidPage(
-  titlePanel("Singapore Weather Geofacet Visualisation (2020–2024)"),
+  titlePanel("Singapore Weather GeoFacet Visualisation"),
   sidebarLayout(
-    sidebarPanel(
-      selectInput("metric", "Select Metric:",
-                  choices = c("Yearly Total Rainfall",
-                              "Yearly Mean Temperature",
-                              "Mean Monthly Temperature",
-                              "Monthly Total Rainfall",
-                              "Dry vs Wet Days Per Month")),
+    sidebarPanel( width = 2,
+      selectInput("variable", "Select Variable:",
+                  choices = c("Total Rainfall (mm)" = "Daily Rainfall Total (mm)",
+                              "Mean Temperature (°C)" = "Mean Temperature (°C)",
+                              "Maximum Temperature (°C)" = "Maximum Temperature (°C)",
+                              "Minimum Temperature (°C)" = "Minimum Temperature (°C)")),
+      selectInput("resolution", "Select Time Resolution:",
+                  choices = c("Monthly", "Yearly")),
       conditionalPanel(
-        condition = "input.metric != 'Yearly Total Rainfall' && input.metric != 'Yearly Mean Temperature'",
-        selectInput("year", "Select Year:", choices = 2020:2024)
+        condition = "input.resolution == 'Monthly'",
+        selectInput("start_month", "Start Month:", choices = month_choices, selected = "2024-01"),
+        selectInput("end_month", "End Month:", choices = month_choices, selected = "2024-12")
+      ),
+      conditionalPanel(
+        condition = "input.resolution == 'Yearly'",
+        sliderInput("year_range", "Select Year Range:",
+                    min = 2020, max = 2024, value = c(2022, 2024), step = 1, sep = "")
       )
     ),
     mainPanel(
-      plotOutput("geofacetPlot", height = "700px")
+      plotlyOutput("geofacetPlot", height = "800px")
     )
   )
 )
@@ -54,81 +66,102 @@ ui <- fluidPage(
 # Server
 server <- function(input, output, session) {
   
-  output$geofacetPlot <- renderPlot({
+  output$geofacetPlot <- renderPlotly({
     
-    weather_data_clean <- weather_data %>%
-      mutate(Date = as.Date(Date),
-             Year = year(Date),
-             Month = month(Date, label = TRUE, abbr = TRUE))
+    df <- weather_data %>%
+      mutate(
+        Year = year(Date),
+        YearMonth = floor_date(Date, "month")
+      )
     
-    plot_data <- switch(input$metric,
-                        
-                        "Yearly Total Rainfall" = weather_data_clean %>%
-                          group_by(Station, Region, Year) %>%
-                          summarise(Value = sum(`Daily Rainfall Total (mm)`, na.rm = TRUE), .groups = "drop") %>%
-                          ggplot(aes(x = Year, y = Value, color = Region)) +
-                          geom_line(size = 1) +
-                          labs(y = "Total Rainfall (mm)", title = "Yearly Total Rainfall"),
-                        
-                        "Yearly Mean Temperature" = weather_data_clean %>%
-                          group_by(Station, Region, Year) %>%
-                          summarise(Value = mean(`Mean Temperature (°C)`, na.rm = TRUE), .groups = "drop") %>%
-                          ggplot(aes(x = Year, y = Value, color = Region)) +
-                          geom_line(size = 1) +
-                          labs(y = "Mean Temp (°C)", title = "Yearly Mean Temperature"),
-                        
-                        "Mean Monthly Temperature" = weather_data_clean %>%
-                          filter(Year == input$year) %>%
-                          group_by(Station, Region, Month) %>%
-                          summarise(Value = mean(`Mean Temperature (°C)`, na.rm = TRUE), .groups = "drop") %>%
-                          ggplot(aes(x = Month, y = Value, color = Region, group = 1)) +
-                          geom_line(size = 1) +
-                          labs(y = "Mean Temp (°C)", title = paste("Mean Monthly Temp -", input$year)),
-                        
-                        "Monthly Total Rainfall" = weather_data_clean %>%
-                          filter(Year == input$year) %>%
-                          group_by(Station, Region, Month) %>%
-                          summarise(Value = sum(`Daily Rainfall Total (mm)`, na.rm = TRUE), .groups = "drop") %>%
-                          ggplot(aes(x = Month, y = Value, fill = Region)) +
-                          geom_col() +
-                          labs(y = "Rainfall (mm)", title = paste("Monthly Total Rainfall -", input$year)),
-                        
-                        "Dry vs Wet Days Per Month" = weather_data_clean %>%
-                          filter(Year == input$year) %>%
-                          mutate(
-                            Month_Label = factor(format(floor_date(Date, "month"), "%b"), levels = month.abb),
-                            RainType = ifelse(`Daily Rainfall Total (mm)` > 0, "Wet", "Dry")
-                          ) %>%
-                          group_by(Station, Region, Month_Label, RainType) %>%
-                          summarise(Days = n(), .groups = "drop") %>%
-                          complete(
-                            Station, Region,
-                            Month_Label = factor(month.abb, levels = month.abb),
-                            RainType = c("Dry", "Wet"),
-                            fill = list(Days = 0)
-                          ) %>%
-                          ggplot(aes(x = Month_Label, y = Days, fill = RainType)) +
-                          geom_col() +
-                          scale_fill_manual(values = c("Dry" = "skyblue", "Wet" = "steelblue")) +
-                          labs(
-                            title = paste("Dry vs Wet Days Per Month by Station (", input$year, ")", sep = ""),
-                            x = "Month", y = "Number of Days", fill = "Day Type"
-                          )
-    )
+    variable_label <- names(which(c("Daily Rainfall Total (mm)",
+                                    "Mean Temperature (°C)",
+                                    "Maximum Temperature (°C)",
+                                    "Minimum Temperature (°C)") == input$variable))
     
-    plot_data +
-      facet_geo(~ Station, grid = custom_grid) +
-      theme_minimal() +
-      theme(
-        strip.text = element_text(size = 9, face = "bold"),
-        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 7),
-        plot.title = element_text(face = "bold", size = 14)
-      ) +
-      labs(x = NULL)
+    is_rainfall <- input$variable == "Daily Rainfall Total (mm)"
+    
+    if (input$resolution == "Yearly") {
+      yrange <- input$year_range
+      filtered_df <- df %>% filter(Year >= yrange[1], Year <= yrange[2])
+      
+      agg_df <- filtered_df %>%
+        group_by(Station, Region, Year) %>%
+        summarise(Value = if (is_rainfall) sum(.data[[input$variable]], na.rm = TRUE)
+                  else if (input$variable == "Mean Temperature (°C)") mean(.data[[input$variable]], na.rm = TRUE)
+                  else if (input$variable == "Maximum Temperature (°C)") max(.data[[input$variable]], na.rm = TRUE)
+                  else min(.data[[input$variable]], na.rm = TRUE),
+                  .groups = "drop")
+      
+      plt <- ggplot(agg_df, aes(x = Year, y = Value, fill = Region,
+                                text = paste0("Station: ", Station,
+                                              "<br>Year: ", Year,
+                                              "<br>", variable_label, ": ", round(Value, 2)))) +
+        (if (is_rainfall) geom_col() else geom_line(aes(color = Region, group = Station), size = 1)) +
+        facet_geo(~ Station, grid = custom_grid) +
+        theme_minimal() +
+        labs(title = paste("Yearly", variable_label, "by Station"),
+             x = "Year", y = variable_label) +
+        theme(strip.text = element_text(size = 9, face = "bold"),
+              axis.text.x = element_text(angle = 45, hjust = 1))
+      
+    } else {
+      # Monthly
+      start_date <- as.Date(paste0(input$start_month, "-01"))
+      end_date <- ceiling_date(as.Date(paste0(input$end_month, "-01")), "month") - 1
+      
+      filtered_df <- df %>%
+        filter(YearMonth >= start_date & YearMonth <= end_date)
+      
+      agg_df <- filtered_df %>%
+        group_by(Station, Region, YearMonth) %>%
+        summarise(Value = if (is_rainfall) sum(.data[[input$variable]], na.rm = TRUE)
+                  else if (input$variable == "Mean Temperature (°C)") mean(.data[[input$variable]], na.rm = TRUE)
+                  else if (input$variable == "Maximum Temperature (°C)") max(.data[[input$variable]], na.rm = TRUE)
+                  else min(.data[[input$variable]], na.rm = TRUE),
+                  .groups = "drop")
+      
+      if (is_rainfall) {
+        agg_df <- agg_df %>%
+          mutate(MonthLabel = factor(format(YearMonth, "%b %Y"),
+                                     levels = format(seq(start_date, end_date, by = "month"), "%b %Y")))
+        
+        plt <- ggplot(agg_df, aes(x = MonthLabel, y = Value, fill = Region,
+                                  text = paste0("Station: ", Station,
+                                                "<br>Date: ", MonthLabel,
+                                                "<br>", variable_label, ": ", round(Value, 2)))) +
+          geom_col() +
+          facet_geo(~ Station, grid = custom_grid) +
+          theme_minimal() +
+          labs(title = paste("Monthly", variable_label, "by Station"),
+               x = "Month", y = variable_label) +
+          theme(strip.text = element_text(size = 9, face = "bold"),
+                axis.text.x = element_text(angle = 90, vjust = 0.5))
+        
+      } else {
+        plt <- ggplot(agg_df, aes(x = YearMonth, y = Value, color = Region, group = Station,
+                                  text = paste0("Station: ", Station,
+                                                "<br>Date: ", format(YearMonth, "%b %Y"),
+                                                "<br>", variable_label, ": ", round(Value, 2)))) +
+          geom_line(size = 1) +
+          scale_x_date(
+            date_labels = "%b %Y",
+            date_breaks = "1 month",
+            limits = c(start_date, end_date)
+          ) +
+          facet_geo(~ Station, grid = custom_grid) +
+          theme_minimal() +
+          labs(title = paste("Monthly", variable_label, "by Station"),
+               x = "Month", y = variable_label) +
+          theme(strip.text = element_text(size = 9, face = "bold"),
+                axis.text.x = element_text(angle = 90, vjust = 0.5))
+      }
+    }
+    
+    ggplotly(plt, tooltip = "text") %>%
+      layout(hoverlabel = list(bgcolor = "white"))
   })
 }
 
 # Run the app
 shinyApp(ui, server)
-
-
